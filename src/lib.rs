@@ -295,6 +295,36 @@
 /// Open enums implement `PartialEq` and `Eq` in order to work in a `match` statement.
 pub use open_enum_derive::open_enum;
 
+/// Derives infallible `From<$repr>` for the generated struct type.
+///
+/// Requires an explicit `#[repr(Int)]` on the original open enum definition. Cannot be
+/// used at the same time as [`TryFromKnownRepr`].
+pub use open_enum_derive::FromRepr;
+
+/// Derives infallible `From<OpenEnum> for $repr`, i.e. `Into<$repr>`.
+///
+/// Requires an explicit `#[repr(Int)]` on the original open enum definition.
+pub use open_enum_derive::ToRepr;
+
+/// Derives infallible `From<$repr>` for the generated struct type.
+///
+/// Requires an explicit `#[repr(Int)]` on the original open enum definition and is
+/// incompatible with the `allow_alias` option. Cannot be used
+/// at the same time as [`FromRepr`].
+pub use open_enum_derive::TryFromKnownRepr;
+
+#[derive(Debug, Clone, Copy)]
+pub struct TryFromKnownReprError;
+
+impl core::fmt::Display for TryFromKnownReprError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("underlying repr was not one of the known variants")
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for TryFromKnownReprError {}
+
 /// Utility items only to be used by macros. Do not expect API stability.
 #[doc(hidden)]
 pub mod __private {
