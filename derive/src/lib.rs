@@ -502,7 +502,7 @@ fn try_from_known_repr_impl(input: syn::DeriveInput) -> Result<TokenStream, Erro
 
     Ok(quote! {
         impl ::core::convert::TryFrom<#inner_repr> for #ident {
-            type Error = ::open_enum::TryFromKnownReprError;
+            type Error = ::open_enum::UnknownVariantError;
             fn try_from(r: #inner_repr) -> ::core::result::Result<Self, Self::Error> {
                 let maybe_self = Self(r);
                 #[deny(unreachable_patterns)]
@@ -512,7 +512,7 @@ fn try_from_known_repr_impl(input: syn::DeriveInput) -> Result<TokenStream, Erro
                         Self::#each_variant_ident => ::core::result::Result::Ok(maybe_self),
                     )*
                     #[allow(unreachable_patterns)]
-                    _ => ::core::result::Result::Err(::open_enum::TryFromKnownReprError),
+                    _ => ::core::result::Result::Err(::open_enum::UnknownVariantError),
                 }
             }
         }
