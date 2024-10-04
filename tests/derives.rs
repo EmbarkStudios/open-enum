@@ -132,7 +132,7 @@ fn try_from_known_repr() {
     {
         let unknown: u32 = 3; // should match value of Orange in def to make sure we exclude
         let res = ColorWithFeatures::try_from(unknown);
-        assert!(matches!(res, Err(TryFromKnownReprError)));
+        assert!(matches!(res, Err(UnknownVariantError)));
     }
 
     let known: u32 = ColorWithFeatures::Red.into();
@@ -141,5 +141,5 @@ fn try_from_known_repr() {
 
     let unknown: u32 = 100;
     let res = ColorWithFeatures::try_from(unknown);
-    assert!(matches!(res, Err(TryFromKnownReprError)));
+    assert!(matches!(res, Err(UnknownVariantError)));
 }

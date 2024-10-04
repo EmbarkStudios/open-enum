@@ -23,14 +23,14 @@ use config::Config;
 
 use discriminant::Discriminant;
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote, ToTokens};
+use quote::{format_ident, quote, quote_spanned, ToTokens};
 use repr::Repr;
 use std::collections::HashSet;
-use syn::Attribute;
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, Error, Ident, ItemEnum, Visibility,
+    Attribute,
 };
-use variants::{OpenEnumVariants, Variant};
+use variants::OpenEnumVariants;
 
 /// Sets the span for every token tree in the token stream
 fn set_token_stream_span(tokens: TokenStream, span: Span) -> TokenStream {
@@ -166,9 +166,21 @@ fn open_enum_impl(
     Config {
         allow_alias,
         repr_visibility,
+        with_closed,
     }: Config,
 ) -> Result<TokenStream, Error> {
-    // Does the enum define a `#[repr()]`?
+
+    let closed_enum = if with_closed {
+        let mut closed = enum_.clone();
+        closed.attrs.clear();
+        let ident = closed.ident;
+        closed.ident = format_ident!("{}Closed", ident);
+        Some(closed)
+    } else {
+        None
+    };
+
+    let mut closed_attrs: Vec<TokenStream> = Vec::with_capacity(enum_.attrs.len() + 5);
     let mut struct_attrs: Vec<TokenStream> = Vec::with_capacity(enum_.attrs.len() + 5);
     struct_attrs.push(quote!(#[allow(clippy::exhaustive_structs)]));
 
@@ -207,6 +219,8 @@ fn open_enum_impl(
     let mut should_emit_alias_helper = false;
     for attr in &enum_.attrs {
         let mut include_in_struct = true;
+        let mut include_in_closed = false;
+        let mut include_in_impl = false;
         // Turns out `is_ident` does a `to_string` every time
         match attr.path().to_token_stream().to_string().as_str() {
             "derive" => {
@@ -246,20 +260,38 @@ fn open_enum_impl(
                 }
             }
             // Copy linting attribute to the impl.
-            "allow" | "warn" | "deny" | "forbid" => impl_attrs.push(attr.to_token_stream()),
+            "allow" | "warn" | "deny" | "forbid" => {
+                include_in_closed = true;
+                include_in_impl = true;
+            }
             "repr" => {
                 assert!(explicit_repr.is_none(), "duplicate explicit repr");
                 explicit_repr = Some(attr.parse_args()?);
+                include_in_closed = true;
                 include_in_struct = false;
+            }
+            "cfg" => {
+                include_in_closed = true;
             }
             "non_exhaustive" => {
                 // technically it's exhaustive if the enum covers the full integer range
                 return Err(Error::new(attr.path().span(), "`non_exhaustive` cannot be applied to an open enum; it is already non-exhaustive"));
             }
+            "open_enum_closed_attr" => {
+                include_in_struct = false;
+                let inner: TokenStream = attr.parse_args()?;
+                closed_attrs.push(quote_spanned!(attr.meta.span() => #[#inner]));
+            }
             _ => {}
         }
         if include_in_struct {
             struct_attrs.push(attr.to_token_stream());
+        }
+        if include_in_closed {
+            closed_attrs.push(attr.to_token_stream());
+        }
+        if include_in_impl {
+            impl_attrs.push(attr.to_token_stream());
         }
     }
 
@@ -280,29 +312,32 @@ fn open_enum_impl(
         }
     };
 
+    if explicit_repr.is_none() && with_closed {
+        closed_attrs.push(quote!(#[repr(#inner_repr)]));
+    }
+
     if !extra_derives.is_empty() {
         struct_attrs.push(quote!(#[derive(#(#extra_derives),*)]));
     }
+
+    let (variant_idents, variant_cfg_attrs) = variants.iter().map(|(ident, _, _, attrs)| (
+            (*ident).clone(),
+            attrs.iter()
+                .filter(|attr| attr.path().is_ident("cfg"))
+                .cloned()
+                .collect(),
+        )).unzip();
+    let open_enum_variants = OpenEnumVariants {
+        variant_idents,
+        variant_cfg_attrs,
+    };
 
     // helper attrs must come after the derives due to https://github.com/rust-lang/rust/issues/79202
     if should_emit_repr_helper {
         struct_attrs.push(quote!(#[open_enum_repr(#explicit_repr)]));
     }
     if should_emit_variants_helper {
-        let inner = OpenEnumVariants {
-            variants: variants
-                .iter()
-                .map(|(ident, _, _, attrs)| Variant {
-                    ident: (*ident).clone(),
-                    cfg_attrs: attrs
-                        .iter()
-                        .filter(|attr| attr.path().is_ident("cfg"))
-                        .cloned()
-                        .collect(),
-                })
-                .collect(),
-        };
-        struct_attrs.push(quote!(#[open_enum_variants(#inner)]));
+        struct_attrs.push(quote!(#[open_enum_variants(#open_enum_variants)]));
     }
     if should_emit_alias_helper {
         if allow_alias {
@@ -344,6 +379,36 @@ fn open_enum_impl(
             )
         });
 
+
+    let closed = if let Some(closed_enum) = closed_enum {
+        let closed_ident = &closed_enum.ident;
+        let each_variant_cfg_attrs = &open_enum_variants.variant_cfg_attrs;
+        let each_variant_ident = &open_enum_variants.variant_idents;
+        let open_ident = &ident;
+        quote! {
+            #(#closed_attrs)*
+            #closed_enum
+
+            impl ::core::convert::TryFrom<#open_ident> for #closed_ident {
+                type Error = ::open_enum::UnknownVariantError;
+
+                fn try_from(open: #open_ident) -> ::core::result::Result<Self, Self::Error> {
+                    #[deny(unreachable_patterns)]
+                    match open {
+                        #(
+                            #(#each_variant_cfg_attrs)*
+                            #open_ident::#each_variant_ident => ::core::result::Result::Ok(#closed_ident::#each_variant_ident),
+                        )*
+                        #[allow(unreachable_patterns)]
+                        _ => ::core::result::Result::Err(::open_enum::UnknownVariantError),
+                    }
+                }
+            }
+        }
+    } else {
+        quote!{}
+    };
+
     Ok(quote! {
         #(#struct_attrs)*
         #vis struct #ident(#repr_visibility #inner_repr);
@@ -356,6 +421,9 @@ fn open_enum_impl(
         }
         #debug_impl
         #alias_check
+
+        #closed
+
     })
 }
 
@@ -488,16 +556,16 @@ fn try_from_known_repr_impl(input: syn::DeriveInput) -> Result<TokenStream, Erro
 
     let inner_repr = extract_repr("TryFromKnownRepr", &input.attrs)?;
 
-    let OpenEnumVariants { variants } = extract_variants(&input.attrs)?;
-    if variants.is_empty() {
+    let OpenEnumVariants { variant_cfg_attrs, variant_idents } = extract_variants(&input.attrs)?;
+    if variant_idents.is_empty() {
         return Err(Error::new_spanned(
             &input.ident,
             "`TryFromKnownRepr` requires at least one known variant.",
         ));
     }
 
-    let (each_variant_ident, each_variant_attrs): (Vec<_>, Vec<_>) =
-        variants.into_iter().map(|v| (v.ident, v.cfg_attrs)).unzip();
+    let each_variant_cfg_attrs = &variant_cfg_attrs;
+    let each_variant_ident = &variant_idents;
     let ident = input.ident;
 
     Ok(quote! {
@@ -508,7 +576,7 @@ fn try_from_known_repr_impl(input: syn::DeriveInput) -> Result<TokenStream, Erro
                 #[deny(unreachable_patterns)]
                 match maybe_self {
                     #(
-                        #(#each_variant_attrs)*
+                        #(#each_variant_cfg_attrs)*
                         Self::#each_variant_ident => ::core::result::Result::Ok(maybe_self),
                     )*
                     #[allow(unreachable_patterns)]

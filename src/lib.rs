@@ -258,7 +258,7 @@
 //! [non-exhaustive]: https://doc.rust-lang.org/reference/attributes/type_system.html#the-non_exhaustive-attribute
 //! [ub]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 /// Constructs an *open* enum from a Rust enum definition,
 /// allowing it to represent more than just its listed variants.
@@ -324,6 +324,19 @@ impl core::fmt::Display for UnknownVariantError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("underlying repr was not one of the known variants")
     }
+}
+
+pub trait WithClosed {
+    type Closed;
+
+    fn from_closed(closed: Self::Closed) -> Self;
+}
+
+pub trait ClosedEnum {
+    type Open;
+
+    fn into_open(self) -> Self::Open;
+    fn try_from_open(self) -> Result<Self::Open, UnknownVariantError>;
 }
 
 #[cfg(feature = "std")]

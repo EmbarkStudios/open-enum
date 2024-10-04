@@ -14,69 +14,76 @@
 
 use std::collections::HashSet;
 
-use proc_macro2::{Ident, Span};
-use quote::ToTokens;
+use proc_macro2::Span;
 use syn::{parse::Parse, Error, Token, Visibility};
 
 pub struct Config {
     pub allow_alias: bool,
     pub repr_visibility: Visibility,
+    pub with_closed: bool,
+}
+
+mod kw {
+    syn::custom_keyword!(allow_alias);
+    syn::custom_keyword!(with_closed);
+    syn::custom_keyword!(inner_vis);
+}
+
+fn parse_optional_eq_bool(input: syn::parse::ParseStream) -> syn::Result<bool> {
+    Ok(if input.peek(Token![=]) {
+        let _eq_token: Token![=] = input.parse()?;
+        let out: syn::LitBool = input.parse()?;
+        out.value
+    } else {
+        true
+    })
 }
 
 impl Parse for Config {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut out = Self {
             allow_alias: false,
+            with_closed: false,
             repr_visibility: Visibility::Public(Token![pub](Span::call_site())),
         };
-        let mut seen_names = HashSet::new();
+        let mut seen_kws = HashSet::new();
         while !input.is_empty() {
-            let name: Ident = input.parse()?;
-            let name_string = name.to_token_stream().to_string();
-            let has_value = input.peek(Token![=]);
-            if has_value {
+            let lookahead = input.lookahead1();
+            if lookahead.peek(kw::allow_alias) {
+                let allow_alias = input.parse::<kw::allow_alias>().unwrap();
+                if !seen_kws.insert("allow_alias") {
+                    return Err(Error::new_spanned(&allow_alias, "`allow_alias` config specified twice"));
+                }
+
+                out.allow_alias = parse_optional_eq_bool(input)?;
+            } else if lookahead.peek(kw::with_closed) {
+                let with_closed = input.parse::<kw::with_closed>().unwrap();
+                if !seen_kws.insert("with_closed") {
+                    return Err(Error::new_spanned(&with_closed, "`with_closed` config specified twice"));
+                }
+
+                out.with_closed = parse_optional_eq_bool(input)?;
+            } else if lookahead.peek(kw::inner_vis) {
+                let inner_vis = input.parse::<kw::inner_vis>().unwrap();
+                if !seen_kws.insert("inner_vis") {
+                    return Err(Error::new_spanned(&inner_vis, "`inner_vis` attribute specified twice"));
+                }
+
                 let _eq_token: Token![=] = input.parse()?;
-            }
-            match name_string.as_str() {
-                "allow_alias" => {
-                    if has_value {
-                        let allow_alias: syn::LitBool = input.parse()?;
-                        out.allow_alias = allow_alias.value;
-                    } else {
-                        out.allow_alias = true;
-                    }
+
+                out.repr_visibility = input.parse()?;
+                if matches!(out.repr_visibility, syn::Visibility::Inherited) {
+                    return Err(input.error("Expected visibility"));
                 }
-                name_str @ "inner_vis" if !has_value => {
-                    return Err(Error::new(
-                        name.span(),
-                        format!("Option `{name_str}` requires a value"),
-                    ))
-                }
-                "inner_vis" => {
-                    out.repr_visibility = input.parse()?;
-                    if matches!(out.repr_visibility, syn::Visibility::Inherited) {
-                        return Err(input.error("Expected visibility"));
-                    }
-                }
-                unknown_name => {
-                    return Err(Error::new(
-                        name.span(),
-                        format!("Unknown option `{unknown_name}`"),
-                    ));
-                }
+            } else {
+                return Err(lookahead.error())
             }
             if !input.is_empty() {
                 let _comma: Token![,] = input.parse()?;
             }
-            if !seen_names.insert(name_string) {
-                return Err(Error::new(
-                    name.span(),
-                    format!(
-                        "Option `{name}` listed more than once",
-                        name = name.to_token_stream()
-                    ),
-                ));
-            }
+        }
+        if out.allow_alias && out.with_closed {
+            return Err(Error::new(Span::call_site(), "`with_closed` and `allow_alias` cannot be used together"));
         }
         Ok(out)
     }

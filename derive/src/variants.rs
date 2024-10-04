@@ -42,22 +42,26 @@ impl ToTokens for Variant {
 }
 
 pub struct OpenEnumVariants {
-    pub variants: Vec<Variant>,
+    pub variant_idents: Vec<Ident>,
+    pub variant_cfg_attrs: Vec<Vec<Attribute>>,
 }
 
 impl Parse for OpenEnumVariants {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let variants = input.parse_terminated(Variant::parse, Token![,])?;
 
+        let (variant_idents, variant_cfg_attrs) = variants.into_iter().map(|v| (v.ident, v.cfg_attrs)).unzip();
         Ok(Self {
-            variants: variants.into_iter().collect(),
+            variant_idents,
+            variant_cfg_attrs,
         })
     }
 }
 
 impl ToTokens for OpenEnumVariants {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let each_variant = &self.variants;
-        tokens.extend(quote!(#(#each_variant),*));
+        let each_variant_ident = &self.variant_idents;
+        let each_variant_cfg_attrs = &self.variant_cfg_attrs;
+        tokens.extend(quote!(#( #(#each_variant_cfg_attrs)* #each_variant_ident ),*));
     }
 }
